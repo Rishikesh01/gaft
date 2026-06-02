@@ -37,17 +37,17 @@ func NewSender() *sender {
 	return sender
 }
 
-// AppendEntries implements [Sender].
-func (s *sender) AppendEntries(memeber string, input rafttypes.AppendEntriesInput) rafttypes.AppendEntiresResponse {
+// AppendEntries implements [node.Sender].
+func (s *sender) AppendEntries(memeber string, input rafttypes.AppendEntriesInput) (rafttypes.AppendEntiresResponse, error) {
 	panic("unimplemented")
 }
 
-// RequestVote implements [Sender].
-func (s *sender) RequestVote(memeber string, input rafttypes.RequestVoteInput) rafttypes.RequestVoteResponse {
+// RequestVote implements [node.Sender].
+func (s *sender) RequestVote(memeber string, input rafttypes.RequestVoteInput) (rafttypes.RequestVoteResponse, error) {
 	panic("unimplemented")
 }
 
-// UpdatePeers implements [Sender].
+// UpdatePeers implements [node.Sender].
 func (s *sender) UpdatePeers(map[string]string) {
 	panic("unimplemented")
 }

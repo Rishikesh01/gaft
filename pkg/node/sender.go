@@ -1,7 +1,5 @@
 package node
 
-import "github.com/Rishikesh01/gaft/pkg/persistence"
-
 type SendMsg interface {
 	// Used to replicate Log and as heartBeat by leader
 	AppendEntries(input AppendEntriesInput) AppendEntiresResponse
@@ -19,7 +17,7 @@ type AppendEntriesInput struct {
 	PrevLogTerm  int64
 	LeaderCommit int64
 	LeaderName   string
-	Entries      []persistence.AppendLog
+	Entries      []AppendLog
 }
 
 type AppendEntiresResponse struct {

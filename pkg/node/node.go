@@ -3,7 +3,6 @@ package node
 import (
 	"sync"
 
-	"github.com/Rishikesh01/gaft/pkg/persistence"
 	"go.uber.org/zap"
 )
 
@@ -30,7 +29,7 @@ type ClusterNode struct {
 	lastCommittedIndex int64
 
 	nextIndexs int64
-	appendLogs []persistence.AppendLog
+	appendLogs []AppendLog
 	// member name
 	votedFor string
 	log      zap.SugaredLogger

@@ -5,29 +5,60 @@ import (
 	"net"
 	"net/rpc"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Rishikesh01/gaft/pkg/node"
+	"github.com/Rishikesh01/gaft/pkg/rafttypes"
 	"go.uber.org/zap"
 )
 
+var _ node.Sender = (*sender)(nil)
+
 type sender struct {
-	mu             sync.Mutex
-	clusterMembers map[string]string
-	clients        map[string]*rpc.Client
+	mu           sync.Mutex
+	clusterPeers atomic.Pointer[map[string]*peer]
 }
 
-func NewSender(clusterMembers map[string]string) *sender {
-	return &sender{
-		mu:             sync.Mutex{},
-		clusterMembers: clusterMembers,
-		clients:        map[string]*rpc.Client{},
+type peer struct {
+	client    *rpc.Client
+	isRemoved atomic.Bool
+	address   string
+	mu        sync.Mutex
+}
+
+func NewSender() *sender {
+	sender := &sender{
+		mu:           sync.Mutex{},
+		clusterPeers: atomic.Pointer[map[string]*peer]{},
 	}
+	defaultMap := make(map[string]*peer)
+	sender.clusterPeers.Store(&defaultMap)
+
+	return sender
 }
 
-func Run(logger zap.SugaredLogger, clusterNode *node.ClusterNode) {
+// AppendEntries implements [Sender].
+func (s *sender) AppendEntries(memeber string, input rafttypes.AppendEntriesInput) rafttypes.AppendEntiresResponse {
+	panic("unimplemented")
+}
+
+// RequestVote implements [Sender].
+func (s *sender) RequestVote(memeber string, input rafttypes.RequestVoteInput) rafttypes.RequestVoteResponse {
+	panic("unimplemented")
+}
+
+// UpdatePeers implements [Sender].
+func (s *sender) UpdatePeers(map[string]string) {
+	panic("unimplemented")
+}
+
+func Run(logger zap.SugaredLogger, clusterNode node.Handler) {
 	server := rpc.NewServer()
 	port := ":9100"
-	server.Register(clusterNode)
+	server.Register(&rpcHandler{
+		node:   clusterNode,
+		logger: logger,
+	})
 	ln, err := net.Listen("tcp", port)
 	if err != nil {
 		logger.Panic("failed to listen at tcp port:", zap.Error(err))

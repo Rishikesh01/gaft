@@ -14,18 +14,18 @@ type fileFormatRaftLog struct {
 
 type fileFormatIndex struct {
 	header indexHeader
-	// index and it's start offset
-	indexMap map[int64]indexMap
+	indexs [256]indexs
 }
 
-type indexMap struct {
-	startOffSet int64
+type indexs struct {
+	startOffSet uint64
 	fileName    string
 }
 
 type indexHeader struct {
-	startIndex int64
-	endIndex   int64
+	crc        uint32
+	startIndex uint64
+	endIndex   uint64
 }
 
 func (f *fileFormatRaftLog) Store(w io.Writer) error {
@@ -44,8 +44,8 @@ func (f *fileFormatRaftLog) Store(w io.Writer) error {
 func writeLog(w io.Writer, log *rafttypes.AppendLog) error {
 	var buf [24]byte
 
-	binary.BigEndian.PutUint64(buf[0:8], uint64(log.Index))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(log.Term))
+	binary.BigEndian.PutUint64(buf[0:8], log.Index)
+	binary.BigEndian.PutUint64(buf[8:16], log.Term)
 	binary.BigEndian.PutUint64(buf[16:24], uint64(len(log.Data)))
 
 	if _, err := w.Write(buf[:]); err != nil {
@@ -54,4 +54,14 @@ func writeLog(w io.Writer, log *rafttypes.AppendLog) error {
 
 	_, err := w.Write(log.Data)
 	return err
+}
+
+func (f *fileFormatIndex) Store(w io.Writer) error {
+	var buf [24]byte
+
+	binary.BigEndian.PutUint64(buf[0:8], f.header.startIndex)
+	binary.BigEndian.PutUint64(buf[8:16], f.header.endIndex)
+	binary.BigEndian.PutUint32(buf[16:20], f.header.crc)
+
+	return nil
 }

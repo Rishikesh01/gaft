@@ -27,8 +27,8 @@ type RequestVoteResponse struct {
 }
 
 type AppendLog struct {
-	Index int64
-	Term  int64
+	Index uint64
+	Term  uint64
 	Data  []byte
 }
 

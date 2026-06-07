@@ -4,12 +4,12 @@ import "github.com/Rishikesh01/gaft/pkg/rafttypes"
 
 type logCache struct {
 	logs         [256]rafttypes.AppendLog
-	currentIndex int
+	currentIndex uint64
 }
 
 // circular buffer
 func (l *logCache) appendToCache(log rafttypes.AppendLog) {
-	if l.currentIndex == len(l.logs)-1 {
+	if l.currentIndex == uint64(len(l.logs)-1) {
 		l.currentIndex = 0
 	}
 

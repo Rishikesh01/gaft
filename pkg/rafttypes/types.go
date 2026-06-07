@@ -31,3 +31,7 @@ type AppendLog struct {
 	Term  int64
 	Data  []byte
 }
+
+func (a *AppendLog) Size() int64 {
+	return 8 + 8 + int64(len(a.Data))
+}

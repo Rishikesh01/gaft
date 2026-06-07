@@ -1,10 +1,89 @@
 package persistence
 
-import "github.com/Rishikesh01/gaft/pkg/rafttypes"
+import (
+	"errors"
+	"hash/crc32"
+	"os"
+	"path/filepath"
+
+	"github.com/Rishikesh01/gaft/pkg/rafttypes"
+)
 
 type Persistence interface {
 	LastReadVoteState() (currentTerm int64, votedFor string, err error)
 	SaveVoteState(currentTerm int64, votedFor string) error
 	ReadLogs(startIndex int64, endIndex int64) ([]rafttypes.AppendLog, error)
 	Append(log rafttypes.AppendLog) error
+}
+
+type filePersistence struct {
+	basePath  string
+	EndoffSet int64
+	logCache  *logCache
+}
+
+var _ Persistence = (*filePersistence)(nil)
+
+func NewFilePersistence(basePath string) *filePersistence {
+	return &filePersistence{
+		basePath: basePath,
+		logCache: &logCache{
+			logs:         [256]rafttypes.AppendLog{},
+			currentIndex: 0,
+		},
+	}
+}
+
+// Append implements [Persistence].
+func (f *filePersistence) Append(log rafttypes.AppendLog) error {
+	raftLogFile, err := os.OpenFile(filepath.Join(f.basePath, fileRaftLog), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+
+	crcValue, err := f.crc(&log)
+	if err != nil {
+		return err
+	}
+	raftLog := fileFormatRaftLog{
+		StartOffset: 8 + 8 + log.Size(),
+		CRC:         crcValue,
+		Log:         &log,
+	}
+
+	if err := raftLog.Store(raftLogFile); err != nil {
+		return err
+	}
+	f.logCache.appendToCache(log)
+
+	return nil
+}
+
+// LastReadVoteState implements [Persistence].
+func (f *filePersistence) LastReadVoteState() (currentTerm int64, votedFor string, err error) {
+	panic("unimplemented")
+}
+
+// ReadLogs implements [Persistence].
+func (f *filePersistence) ReadLogs(startIndex int64, endIndex int64) ([]rafttypes.AppendLog, error) {
+	if endIndex <= startIndex {
+		return nil, errors.New("end index cannot be smaller than  or equal to start index")
+	}
+	logs := make([]rafttypes.AppendLog, 0, endIndex-startIndex)
+	for i := startIndex; i <= endIndex; i++ {
+	}
+}
+
+// SaveVoteState implements [Persistence].
+func (f *filePersistence) SaveVoteState(currentTerm int64, votedFor string) error {
+	return nil
+}
+
+func (f *filePersistence) crc(log *rafttypes.AppendLog) (uint32, error) {
+	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	if err := writeLog(h, log); err != nil {
+		return 0, err
+	}
+
+	return h.Sum32(), nil
 }

@@ -8,24 +8,35 @@ import (
 )
 
 type fileFormatRaftLog struct {
-	StartOffset int64
-	CRC         uint32
-	Log         *rafttypes.AppendLog
+	crc uint32
+	log *rafttypes.AppendLog
+}
+
+type fileFormatIndex struct {
+	header indexHeader
+	// index and it's start offset
+	indexMap map[int64]indexMap
+}
+
+type indexMap struct {
+	startOffSet int64
+	fileName    string
+}
+
+type indexHeader struct {
+	startIndex int64
+	endIndex   int64
 }
 
 func (f *fileFormatRaftLog) Store(w io.Writer) error {
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], uint64(f.StartOffset))
+	var buf [4]byte
+
+	binary.BigEndian.PutUint32(buf[:], f.crc)
 	if _, err := w.Write(buf[:]); err != nil {
 		return err
 	}
 
-	binary.BigEndian.PutUint32(buf[:4], f.CRC)
-	if _, err := w.Write(buf[:4]); err != nil {
-		return err
-	}
-
-	writeLog(w, f.Log)
+	writeLog(w, f.log)
 
 	return nil
 }

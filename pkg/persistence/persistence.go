@@ -40,15 +40,15 @@ func (f *filePersistence) Append(log rafttypes.AppendLog) error {
 	if err != nil {
 		return err
 	}
+	defer raftLogFile.Close()
 
 	crcValue, err := f.crc(&log)
 	if err != nil {
 		return err
 	}
 	raftLog := fileFormatRaftLog{
-		StartOffset: 8 + 8 + log.Size(),
-		CRC:         crcValue,
-		Log:         &log,
+		crc: crcValue,
+		log: &log,
 	}
 
 	if err := raftLog.Store(raftLogFile); err != nil {
@@ -72,6 +72,8 @@ func (f *filePersistence) ReadLogs(startIndex int64, endIndex int64) ([]rafttype
 	logs := make([]rafttypes.AppendLog, 0, endIndex-startIndex)
 	for i := startIndex; i <= endIndex; i++ {
 	}
+
+	return logs, nil
 }
 
 // SaveVoteState implements [Persistence].
@@ -87,3 +89,5 @@ func (f *filePersistence) crc(log *rafttypes.AppendLog) (uint32, error) {
 
 	return h.Sum32(), nil
 }
+
+// TODO: Add startup index reconstruction

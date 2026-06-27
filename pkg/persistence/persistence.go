@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"encoding/binary"
 	"errors"
 	"hash/crc32"
 	"os"
@@ -54,14 +55,25 @@ func (f *filePersistence) Append(log rafttypes.AppendLog) error {
 	if err := raftLog.Store(raftLogFile); err != nil {
 		return err
 	}
+	if err := raftLogFile.Sync(); err != nil {
+		return err
+	}
+
 	f.logCache.appendToCache(log)
 
 	return nil
 }
 
-// LastReadVoteState implements [Persistence].
 func (f *filePersistence) LastReadVoteState() (currentTerm int64, votedFor string, err error) {
-	panic("unimplemented")
+	data, err := os.ReadFile(f.basePath + fileVoteState)
+	if err != nil {
+		return 0, "", err
+	}
+	currentTerm = int64(binary.BigEndian.Uint64(data[0:8]))
+	stringLen := int(binary.BigEndian.Uint64(data[8:16]))
+	votedFor = string(data[16:stringLen])
+
+	return
 }
 
 // ReadLogs implements [Persistence].
@@ -78,7 +90,23 @@ func (f *filePersistence) ReadLogs(startIndex int64, endIndex int64) ([]rafttype
 
 // SaveVoteState implements [Persistence].
 func (f *filePersistence) SaveVoteState(currentTerm int64, votedFor string) error {
-	return nil
+	voteStateFile, err := os.OpenFile(filepath.Join(f.basePath, fileVoteState), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer voteStateFile.Close()
+
+	buf := make([]byte, 0, 16+len(votedFor))
+
+	buf = binary.BigEndian.AppendUint64(buf, uint64(currentTerm))
+	buf = binary.BigEndian.AppendUint64(buf, uint64(len(votedFor)))
+	buf = append(buf, votedFor...)
+
+	if _, err := voteStateFile.Write(buf); err != nil {
+		return err
+	}
+
+	return voteStateFile.Sync()
 }
 
 func (f *filePersistence) crc(log *rafttypes.AppendLog) (uint32, error) {

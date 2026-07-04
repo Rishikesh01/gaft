@@ -43,11 +43,11 @@ func (f *filePersistence) Append(log rafttypes.AppendLog) error {
 	}
 	defer raftLogFile.Close()
 
-	crcValue, err := f.crc(&log)
+	crcValue, err := f.crcAppendLog(&log)
 	if err != nil {
 		return err
 	}
-	raftLog := fileFormatRaftLog{
+	raftLog := fileFormatRaftLogs{
 		crc: crcValue,
 		log: &log,
 	}
@@ -109,7 +109,7 @@ func (f *filePersistence) SaveVoteState(currentTerm int64, votedFor string) erro
 	return voteStateFile.Sync()
 }
 
-func (f *filePersistence) crc(log *rafttypes.AppendLog) (uint32, error) {
+func (f *filePersistence) crcAppendLog(log *rafttypes.AppendLog) (uint32, error) {
 	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
 	if err := writeLog(h, log); err != nil {
 		return 0, err

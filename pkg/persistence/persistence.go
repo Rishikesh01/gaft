@@ -13,7 +13,7 @@ import (
 type Persistence interface {
 	LastReadVoteState() (currentTerm int64, votedFor string, err error)
 	SaveVoteState(currentTerm int64, votedFor string) error
-	ReadLogs(startIndex int64, endIndex int64) ([]rafttypes.AppendLog, error)
+	ReadLogs(startIndex int64, endIndex int64) ([]*rafttypes.AppendLog, error)
 	Append(log rafttypes.AppendLog) error
 }
 
@@ -43,7 +43,7 @@ func (f *filePersistence) Append(log rafttypes.AppendLog) error {
 	}
 	defer raftLogFile.Close()
 
-	crcValue, err := f.crcAppendLog(&log)
+	crcValue, err := crcAppendLog(&log)
 	if err != nil {
 		return err
 	}
@@ -77,12 +77,32 @@ func (f *filePersistence) LastReadVoteState() (currentTerm int64, votedFor strin
 }
 
 // ReadLogs implements [Persistence].
-func (f *filePersistence) ReadLogs(startIndex int64, endIndex int64) ([]rafttypes.AppendLog, error) {
+func (f *filePersistence) ReadLogs(startIndex int64, endIndex int64) ([]*rafttypes.AppendLog, error) {
 	if endIndex <= startIndex {
 		return nil, errors.New("end index cannot be smaller than  or equal to start index")
 	}
-	logs := make([]rafttypes.AppendLog, 0, endIndex-startIndex)
-	for i := startIndex; i <= endIndex; i++ {
+	logs := make([]*rafttypes.AppendLog, 0, endIndex-startIndex)
+	file, err := os.Open(f.basePath + fileRaftLog)
+	if err != nil {
+		return nil, err
+	}
+
+	defer file.Close()
+
+	for {
+		logFile, err := readRaftLog(file)
+		if err != nil {
+			return nil, err
+		}
+
+		if logFile.log.Index == uint64(endIndex) {
+			logs = append(logs, logFile.log)
+			break
+		}
+
+		if logFile.log.Index >= uint64(startIndex) {
+			logs = append(logs, logFile.log)
+		}
 	}
 
 	return logs, nil
@@ -109,7 +129,7 @@ func (f *filePersistence) SaveVoteState(currentTerm int64, votedFor string) erro
 	return voteStateFile.Sync()
 }
 
-func (f *filePersistence) crcAppendLog(log *rafttypes.AppendLog) (uint32, error) {
+func crcAppendLog(log *rafttypes.AppendLog) (uint32, error) {
 	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
 	if err := writeLog(h, log); err != nil {
 		return 0, err
@@ -117,5 +137,3 @@ func (f *filePersistence) crcAppendLog(log *rafttypes.AppendLog) (uint32, error)
 
 	return h.Sum32(), nil
 }
-
-// TODO: Add startup index reconstruction

@@ -38,6 +38,7 @@ type ClusterNode struct {
 	leaderMode *leaderMode
 
 	transport Sender
+	snapshot  Snapshot
 }
 
 type leaderMode struct {

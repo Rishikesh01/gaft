@@ -9,7 +9,7 @@ type logCache struct {
 
 // circular buffer
 func (l *logCache) appendToCache(log rafttypes.AppendLog) {
-	if l.currentIndex == uint64(len(l.logs)-1) {
+	if l.currentIndex == uint64(len(l.logs)) {
 		l.currentIndex = 0
 	}
 

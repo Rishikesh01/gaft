@@ -52,6 +52,11 @@ func (s *sender) UpdatePeers(map[string]string) {
 	panic("unimplemented")
 }
 
+// InstallSnapshot implements [node.Sender].
+func (s *sender) InstallSnapshot(member string, input rafttypes.InstallSnapshotInput) (rafttypes.InstallSnapshotResponse, error) {
+	panic("unimplemented")
+}
+
 func Run(logger zap.SugaredLogger, clusterNode node.Handler) {
 	server := rpc.NewServer()
 	port := ":9100"

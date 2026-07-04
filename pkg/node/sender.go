@@ -12,4 +12,6 @@ type Sender interface {
 		candidates can't vote for others
 	*/
 	RequestVote(memeber string, input rafttypes.RequestVoteInput) (rafttypes.RequestVoteResponse, error)
+
+	InstallSnapshot(member string, input rafttypes.InstallSnapshotInput) (rafttypes.InstallSnapshotResponse, error)
 }

@@ -20,10 +20,8 @@ type sender struct {
 }
 
 type peer struct {
-	client    *rpc.Client
-	isRemoved atomic.Bool
-	address   string
-	mu        sync.Mutex
+	client  *rpc.Client
+	address string
 }
 
 func NewSender() *sender {
@@ -48,8 +46,15 @@ func (s *sender) RequestVote(memeber string, input rafttypes.RequestVoteInput) (
 }
 
 // UpdatePeers implements [node.Sender].
-func (s *sender) UpdatePeers(map[string]string) {
-	panic("unimplemented")
+func (s *sender) UpdatePeers(peersMap map[string]string) {
+	peers := make(map[string]*peer)
+	for member, ip := range peersMap {
+		peers[member] = &peer{
+			client:  &rpc.Client{},
+			address: ip,
+		}
+	}
+	s.clusterPeers.Store(&peers)
 }
 
 // InstallSnapshot implements [node.Sender].
@@ -57,7 +62,7 @@ func (s *sender) InstallSnapshot(member string, input rafttypes.InstallSnapshotI
 	panic("unimplemented")
 }
 
-func Run(logger zap.SugaredLogger, clusterNode node.Handler) {
+func Run(logger zap.SugaredLogger, clusterNode *node.ClusterNode) {
 	server := rpc.NewServer()
 	port := ":9100"
 	server.Register(&rpcHandler{

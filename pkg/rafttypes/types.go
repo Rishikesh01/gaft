@@ -6,7 +6,7 @@ type AppendEntriesInput struct {
 	PrevLogTerm  int64
 	LeaderCommit int64
 	LeaderName   string
-	Entries      []AppendLog
+	Entry        []*AppendLog
 }
 
 type AppendEntiresResponse struct {

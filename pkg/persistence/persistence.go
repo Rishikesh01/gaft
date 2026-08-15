@@ -11,6 +11,7 @@ import (
 )
 
 type Persistence interface {
+	Truncate(fromIndex int64) error
 	LastReadVoteState() (currentTerm int64, votedFor string, err error)
 	SaveVoteState(currentTerm int64, votedFor string) error
 	ReadLogs(startIndex int64, endIndex int64) ([]*rafttypes.AppendLog, error)
@@ -127,6 +128,11 @@ func (f *filePersistence) SaveVoteState(currentTerm int64, votedFor string) erro
 	}
 
 	return voteStateFile.Sync()
+}
+
+// Truncate implements [Persistence].
+func (f *filePersistence) Truncate(fromIndex int64) error {
+	panic("unimplemented")
 }
 
 func crcAppendLog(log *rafttypes.AppendLog) (uint32, error) {

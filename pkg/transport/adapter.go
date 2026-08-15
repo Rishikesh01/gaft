@@ -7,7 +7,7 @@ import (
 )
 
 type rpcHandler struct {
-	node   node.Handler
+	node   *node.ClusterNode
 	logger zap.SugaredLogger
 }
 

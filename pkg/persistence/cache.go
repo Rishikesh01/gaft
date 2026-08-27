@@ -8,11 +8,16 @@ type logCache struct {
 }
 
 // circular buffer
-func (l *logCache) appendToCache(log rafttypes.AppendLog) {
+func (l *logCache) appendToCache(logs ...rafttypes.AppendLog) {
 	if l.currentIndex == uint64(len(l.logs)) {
 		l.currentIndex = 0
 	}
 
-	l.logs[l.currentIndex] = log
-	l.currentIndex++
+	for _, log := range logs {
+		l.logs[l.currentIndex] = log
+		l.currentIndex++
+		if l.currentIndex == uint64(len(l.logs)) {
+			l.currentIndex = 0
+		}
+	}
 }

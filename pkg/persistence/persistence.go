@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -15,7 +16,7 @@ type Persistence interface {
 	LastReadVoteState() (currentTerm int64, votedFor string, err error)
 	SaveVoteState(currentTerm int64, votedFor string) error
 	ReadLogs(startIndex int64, endIndex int64) ([]*rafttypes.AppendLog, error)
-	Append(log rafttypes.AppendLog) error
+	Append(logs ...rafttypes.AppendLog) error
 }
 
 type filePersistence struct {
@@ -37,30 +38,36 @@ func NewFilePersistence(basePath string) *filePersistence {
 }
 
 // Append implements [Persistence].
-func (f *filePersistence) Append(log rafttypes.AppendLog) error {
+func (f *filePersistence) Append(logs ...rafttypes.AppendLog) error {
 	raftLogFile, err := os.OpenFile(filepath.Join(f.basePath, fileRaftLog), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
 	defer raftLogFile.Close()
 
-	crcValue, err := crcAppendLog(&log)
-	if err != nil {
-		return err
-	}
-	raftLog := fileFormatRaftLogs{
-		crc: crcValue,
-		log: &log,
-	}
+	var buf bytes.Buffer
+	for _, log := range logs {
+		crcValue, err := crcAppendLog(&log)
+		if err != nil {
+			return err
+		}
+		raftLog := fileFormatRaftLogs{
+			crc: crcValue,
+			log: &log,
+		}
 
-	if err := raftLog.Store(raftLogFile); err != nil {
+		if err := raftLog.Store(&buf); err != nil {
+			return err
+		}
+	}
+	if _, err := buf.WriteTo(raftLogFile); err != nil {
 		return err
 	}
 	if err := raftLogFile.Sync(); err != nil {
 		return err
 	}
 
-	f.logCache.appendToCache(log)
+	f.logCache.appendToCache(logs...)
 
 	return nil
 }

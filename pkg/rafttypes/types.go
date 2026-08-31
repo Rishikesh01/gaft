@@ -10,8 +10,9 @@ type AppendEntriesInput struct {
 }
 
 type AppendEntiresResponse struct {
-	Term    int64
-	Success bool
+	Term        int64
+	Success     bool
+	CommitIndex int64
 }
 
 type RequestVoteInput struct {

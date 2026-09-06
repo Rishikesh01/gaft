@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Rishikesh01/gaft/pkg/persistence"
-	"github.com/Rishikesh01/gaft/pkg/rafttypes"
 	"go.uber.org/zap"
 )
 
@@ -49,12 +48,4 @@ func NewClusterNode(nodeName string, log zap.SugaredLogger) *ClusterNode {
 	node := &ClusterNode{log: log, nodeName: nodeName}
 	node.nextIndexs.Store(1)
 	return node
-}
-
-func (c *ClusterNode) AppendEntries(input rafttypes.AppendEntriesInput) (*rafttypes.AppendEntiresResponse, error) {
-	panic("unimplemented")
-}
-
-func (c *ClusterNode) RequestVote(input rafttypes.RequestVoteInput) (*rafttypes.RequestVoteResponse, error) {
-	panic("unimplemented")
 }

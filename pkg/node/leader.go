@@ -176,7 +176,9 @@ func (l *leaderMode) replicate(mp *followerState, member string) error {
 	// matchIndex 0 because during election phase we will also add support for getting commitIndex in response from voter which will be initlized as matchIndex
 	if replicaMatchIndex == 0 && leadersCommitedIndex > 0 || replicaMatchIndex < (l.node.lastCommittedIndex.Load()-100) {
 		// TODO: need to add logic to get snapshot from application or check for existing snapshot to send to follower
-		l.node.transport.InstallSnapshot(member, rafttypes.InstallSnapshotInput{})
+		if _, err := l.node.transport.InstallSnapshot(member, rafttypes.InstallSnapshotInput{}); err != nil {
+			l.node.log.Error("install snapshot failed", zap.Error(err), zap.String("member", member))
+		}
 		return nil
 	}
 

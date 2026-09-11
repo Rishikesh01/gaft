@@ -3,7 +3,7 @@ package node
 type raftClusterState struct {
 	nodeName string
 	nodeIp   string
-	nodeRole NodeRole
+	isVoter  bool
 	isMember bool
 }
 

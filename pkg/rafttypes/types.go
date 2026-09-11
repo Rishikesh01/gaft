@@ -35,7 +35,7 @@ type AppendLog struct {
 }
 
 func (a *AppendLog) Size() int64 {
-	return 8 + 8 + int64(len(a.Data))
+	return 8 + 8 + int64(len(a.Type)) + int64(len(a.Data))
 }
 
 type InstallSnapshotInput struct {

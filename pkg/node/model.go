@@ -1,12 +1,16 @@
 package node
 
-import "github.com/Rishikesh01/gaft/pkg/rafttypes"
+type ResizeType string
 
-type appendEntriesRspFrom struct {
-	rsp               rafttypes.AppendEntiresResponse
-	error             error
-	clusterMemberIP   string
-	clusterMemberName string
+const (
+	ResizeAdd    = "add"
+	ResizeRemove = "remove"
+)
+
+type RaftClusterState struct {
+	NodeName string
+	NodeIp   string
+	Change   ResizeType
 }
 
 type appendLogEntriesLeaderRsp struct {
@@ -16,4 +20,9 @@ type appendLogEntriesLeaderRsp struct {
 type Proposal struct {
 	RequestID string
 	Data      []byte
+}
+
+type ProposeClusterResize struct {
+	RequestID string
+	Data      []RaftClusterState
 }

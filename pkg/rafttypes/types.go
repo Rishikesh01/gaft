@@ -30,11 +30,12 @@ type RequestVoteResponse struct {
 type AppendLog struct {
 	Index uint64
 	Term  uint64
+	Type  string
 	Data  []byte
 }
 
 func (a *AppendLog) Size() int64 {
-	return 8 + 8 + int64(len(a.Data))
+	return 8 + 8 + int64(len(a.Type)) + int64(len(a.Data))
 }
 
 type InstallSnapshotInput struct {

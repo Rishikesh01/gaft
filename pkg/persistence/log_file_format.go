@@ -29,17 +29,23 @@ func (f *fileFormatRaftLogs) Store(w io.Writer) error {
 }
 
 func writeLog(w io.Writer, log *rafttypes.AppendLog) error {
-	var buf [24]byte
+	var buf [32]byte
 
 	binary.BigEndian.PutUint64(buf[0:8], log.Index)
 	binary.BigEndian.PutUint64(buf[8:16], log.Term)
-	binary.BigEndian.PutUint64(buf[16:24], uint64(len(log.Data)))
+	binary.BigEndian.PutUint64(buf[16:24], uint64(len(log.Type)))
+	binary.BigEndian.PutUint64(buf[24:32], uint64(len(log.Data)))
 
 	if _, err := w.Write(buf[:]); err != nil {
 		return err
 	}
 
-	_, err := w.Write(log.Data)
+	_, err := w.Write([]byte(log.Type))
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(log.Data)
 	return err
 }
 
@@ -49,15 +55,20 @@ func readRaftLog(r io.Reader) (fileFormatRaftLogs, error) {
 		return fileFormatRaftLogs{}, err
 	}
 
-	var hdr [24]byte
+	var hdr [32]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return fileFormatRaftLogs{}, err
 	}
 
 	index := binary.BigEndian.Uint64(hdr[0:8])
 	term := binary.BigEndian.Uint64(hdr[8:16])
-	dataLen := binary.BigEndian.Uint64(hdr[16:24])
+	typeLen := binary.BigEndian.Uint64(hdr[16:24])
+	dataLen := binary.BigEndian.Uint64(hdr[24:32])
 
+	logType := make([]byte, typeLen)
+	if _, err := io.ReadFull(r, logType); err != nil {
+		return fileFormatRaftLogs{}, err
+	}
 	data := make([]byte, dataLen)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return fileFormatRaftLogs{}, err
@@ -65,6 +76,7 @@ func readRaftLog(r io.Reader) (fileFormatRaftLogs, error) {
 	log := &rafttypes.AppendLog{
 		Index: index,
 		Term:  term,
+		Type:  string(logType),
 		Data:  data,
 	}
 

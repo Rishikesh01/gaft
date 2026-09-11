@@ -18,6 +18,11 @@ const (
 	RoleLearner   NodeRole = "Learner"
 )
 
+const (
+	logTypeApplication = "application"
+	logTypeRaftCluster = "raft_cluster"
+)
+
 type ClusterNode struct {
 	mu sync.Mutex
 	// identity of the node
@@ -48,5 +53,23 @@ type ClusterNode struct {
 func NewClusterNode(nodeName string, log zap.SugaredLogger) *ClusterNode {
 	node := &ClusterNode{log: log, nodeName: nodeName}
 	node.nextIndexs.Store(1)
+	node.currentRole.Store(new(RoleLearner))
 	return node
+}
+
+func BootStrapCluster(nodeName string, log zap.SugaredLogger, clusterMember map[string]string) *ClusterNode {
+	node := NewClusterNode(nodeName, log)
+	node.clusterMembers = clusterMember
+	return node
+}
+
+func (c *ClusterNode) NodeTypeWatcher() {
+	for {
+		switch *c.currentRole.Load() {
+		case RoleLeader:
+		case RoleCandidate:
+		case RoleLearner:
+		default:
+		}
+	}
 }

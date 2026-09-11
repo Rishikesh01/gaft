@@ -68,6 +68,7 @@ func (c *leaderMode) ProposeLogEntry(inputs []Proposal) (*appendLogEntriesLeader
 			Index: uint64(nextIndex),
 			Term:  uint64(c.node.currentTerm.Load()),
 			Data:  inputs[i].Data,
+			Type:  logTypeApplication,
 		})
 		nextIndex++
 	}

@@ -1,12 +1,10 @@
 package node
 
-import "github.com/Rishikesh01/gaft/pkg/rafttypes"
-
-type appendEntriesRspFrom struct {
-	rsp               rafttypes.AppendEntiresResponse
-	error             error
-	clusterMemberIP   string
-	clusterMemberName string
+type raftClusterState struct {
+	nodeName string
+	nodeIp   string
+	nodeRole NodeRole
+	isMember bool
 }
 
 type appendLogEntriesLeaderRsp struct {

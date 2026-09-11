@@ -30,6 +30,7 @@ type RequestVoteResponse struct {
 type AppendLog struct {
 	Index uint64
 	Term  uint64
+	Type  string
 	Data  []byte
 }
 

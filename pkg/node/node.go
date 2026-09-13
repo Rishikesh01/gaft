@@ -28,8 +28,8 @@ type ClusterNode struct {
 	// identity of the node
 	nodeName string
 	// name and address
-	clusterMembers map[string]string
 	currentRole    atomic.Pointer[NodeRole]
+	clusterManager *ClusterMemberManager
 
 	leaderName  string
 	currentTerm atomic.Int64
@@ -59,7 +59,7 @@ func NewClusterNode(nodeName string, log zap.SugaredLogger) *ClusterNode {
 
 func BootStrapCluster(nodeName string, log zap.SugaredLogger, clusterMember map[string]string) *ClusterNode {
 	node := NewClusterNode(nodeName, log)
-	node.clusterMembers = clusterMember
+	node.clusterManager = NewClusterMemberManager(clusterMember)
 	return node
 }
 

@@ -121,17 +121,33 @@ func (l *leaderMode) replicationManager() {
 }
 
 func (l *leaderMode) matchIndex() {
-	majority := ((len(l.followerStateMap) + 1) / 2) + 1
-	confirmed := 1
+	clusterMembershipState := l.node.clusterManager.GetClusterMembers()
+	oldSetMajority := ((clusterMembershipState.oldMembers) / 2) + 1
+	newSetMajority := ((clusterMembershipState.newMembers) / 2) + 1
+	confirmedInOldSet := 0
+	confirmedInNewSet := 0
+
+	if clusterMembershipState.members[l.node.nodeName].state.inOldSet() {
+		confirmedInOldSet++
+	}
+	if clusterMembershipState.members[l.node.nodeName].state.inNewSet() {
+		confirmedInNewSet++
+	}
 	if l.pending == nil {
 		return
 	}
 	for member := range l.followerStateMap {
-		if l.pending.index <= l.followerStateMap[member].matchIndex.Load() {
-			confirmed++
+		if l.pending.index > l.followerStateMap[member].matchIndex.Load() {
+			continue
+		}
+		if clusterMembershipState.members[member].state.inOldSet() {
+			confirmedInOldSet++
+		}
+		if clusterMembershipState.members[member].state.inNewSet() {
+			confirmedInNewSet++
 		}
 	}
-	if confirmed >= majority {
+	if confirmedInOldSet >= int(oldSetMajority) && (confirmedInNewSet >= int(newSetMajority)) {
 		l.pending.commit <- true
 		l.pending = nil
 	}
@@ -174,18 +190,19 @@ func (l *leaderMode) replicate(mp *followerState, member string) error {
 	leadersNextIndex := l.node.nextIndexs.Load()
 	leadersCommitedIndex := l.node.lastCommittedIndex.Load()
 	leadersCurrentTerm := l.node.currentTerm.Load()
+	clusterMembers := l.node.clusterManager.GetClusterMembers().members
 	if l.node.snapshotIndex.Load() > replicaMatchIndex {
 		if _, err := l.node.transport.InstallSnapshot(member, rafttypes.InstallSnapshotInput{}); err != nil {
-			l.node.log.Error("install snapshot failed", zap.Error(err), zap.String("member", member))
+			l.node.log.Error("install snapshot failed", zap.Error(err), zap.String("member", string(member)))
 		}
 		return nil
 	}
 
 	replicationTargetIndex := min(leadersNextIndex, replicaMatchIndex+inputEntriesCap)
 
-	resp, err := l.appendLog(replicationTargetIndex, leadersCommitedIndex, leadersCurrentTerm, replicaMatchIndex, member)
+	resp, err := l.appendLog(clusterMembers, replicationTargetIndex, leadersCommitedIndex, leadersCurrentTerm, replicaMatchIndex, member)
 	if err != nil && !errors.Is(err, ErrAppendEntryMisMatch) {
-		l.node.log.Error("error occured while trying to append entry", zap.Error(err), zap.String("member", member), zap.String("member_ip", l.node.clusterMembers[member]))
+		l.node.log.Error("error occured while trying to append entry", zap.Error(err), zap.String("member", string(member)), zap.String("member_ip", clusterMembers[member].ip))
 		return err
 	}
 
@@ -202,7 +219,7 @@ func (l *leaderMode) replicate(mp *followerState, member string) error {
 	return nil
 }
 
-func (l *leaderMode) appendLog(replicationTargetIndex int64, leadersCommitedIndex int64, leadersCurrentTerm int64, startIndex int64, member string) (*rafttypes.AppendEntiresResponse, error) {
+func (l *leaderMode) appendLog(clusterMembers map[string]memberDetails, replicationTargetIndex int64, leadersCommitedIndex int64, leadersCurrentTerm int64, startIndex int64, member string) (*rafttypes.AppendEntiresResponse, error) {
 	appendEntries, err := l.getAppendEntries(startIndex, replicationTargetIndex, leadersCurrentTerm, leadersCommitedIndex)
 	if err != nil {
 		return nil, err
@@ -214,12 +231,12 @@ func (l *leaderMode) appendLog(replicationTargetIndex int64, leadersCommitedInde
 
 	if !resp.Success {
 		if resp.Term > leadersCurrentTerm {
-			l.node.log.Info("appending entry to follower failed, due to follower having greater term", zap.String("member", member), zap.String("member_ip", l.node.clusterMembers[member]))
+			l.node.log.Info("appending entry to follower failed, due to follower having greater term", zap.String("member", string(member)), zap.String("member_ip", clusterMembers[member].ip))
 			l.stepDown(resp.Term)
 			return nil, ErrMembersCurrentTermHigher
 		}
 
-		l.node.log.Info("appending entry to follower failed", zap.String("member", member), zap.String("member_ip", l.node.clusterMembers[member]))
+		l.node.log.Info("appending entry to follower failed", zap.String("member", string(member)), zap.String("member_ip", clusterMembers[member].ip))
 		return &resp, ErrAppendEntryMisMatch
 	}
 	return nil, nil

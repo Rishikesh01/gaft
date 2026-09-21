@@ -1,6 +1,10 @@
 package node
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/Rishikesh01/gaft/pkg/rafttypes"
+)
 
 type (
 	memberState string
@@ -57,7 +61,10 @@ func NewClusterMemberManager(members map[string]string) *clusterMemberManager {
 }
 
 func (c *clusterMemberManager) GetClusterMembers() *clusterMemberConfig {
-	cfg := c.cfg.Load()
+	return c.cfg.Load()
+}
+
+func deepCopyMap(cfg *clusterMemberConfig) *clusterMemberConfig {
 	newCfg := &clusterMemberConfig{
 		members:    make(map[string]memberDetails, len(cfg.members)),
 		oldMembers: cfg.oldMembers,
@@ -75,8 +82,8 @@ func (c *clusterMemberManager) IsResizeInProgress() bool {
 	return c.resizeInProgress.Load()
 }
 
-func (c *clusterMemberManager) ProcessResizeClusterEvent(stateChanges []RaftClusterState) {
-	mmap := c.GetClusterMembers()
+func (c *clusterMemberManager) ProcessResizeClusterEvent(stateChanges []rafttypes.RaftClusterState) {
+	mmap := deepCopyMap(c.GetClusterMembers())
 	// validation of resize type will be done at http controller level
 	for _, stateChange := range stateChanges {
 		if val, ok := mmap.members[stateChange.NodeName]; ok {
@@ -86,7 +93,7 @@ func (c *clusterMemberManager) ProcessResizeClusterEvent(stateChanges []RaftClus
 			continue
 		}
 		mmap.members[stateChange.NodeName] = memberDetails{
-			ip:    stateChange.NodeIp,
+			ip:    stateChange.NodeIP,
 			state: memberStateLeaner,
 		}
 	}

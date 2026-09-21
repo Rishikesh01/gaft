@@ -1,20 +1,9 @@
 package node
 
-type ResizeType string
-
-const (
-	ResizeAdd    = "add"
-	ResizeRemove = "remove"
-)
-
-type RaftClusterState struct {
-	NodeName string
-	NodeIp   string
-	Change   ResizeType
-}
+import "github.com/Rishikesh01/gaft/pkg/rafttypes"
 
 type appendLogEntriesLeaderRsp struct {
-	commit bool
+	promise *Waiter
 }
 
 type Proposal struct {
@@ -24,5 +13,5 @@ type Proposal struct {
 
 type ProposeClusterResize struct {
 	RequestID string
-	Data      []RaftClusterState
+	Data      []rafttypes.RaftClusterState
 }

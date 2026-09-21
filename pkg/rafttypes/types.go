@@ -1,5 +1,23 @@
 package rafttypes
 
+type ResizeType string
+
+const (
+	ResizeAdd    = "add"
+	ResizeRemove = "remove"
+)
+
+const (
+	LogTypeApplication = "application"
+	LogTypeRaftCluster = "raft_cluster"
+)
+
+type RaftClusterState struct {
+	NodeName string
+	NodeIP   string
+	Change   ResizeType
+}
+
 type AppendEntriesInput struct {
 	Term         int64
 	PrevLogIndex int64

@@ -1,11 +1,11 @@
 package node
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
+	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,15 +33,14 @@ type leaderMode struct {
 	mu                  sync.Mutex
 	proposalTimeout     time.Duration
 	pulse               time.Duration
-	pending             *waiter
-	newAppend           chan waiter
+	waiters             []Waiter
+	newAppend           chan struct{}
 	followerStateChange chan string
 	followerStateMap    map[string]*followerState
 	node                *ClusterNode
-	configChan          chan struct{}
 }
 
-type waiter struct {
+type Waiter struct {
 	index  int64
 	commit chan bool
 }
@@ -58,24 +57,19 @@ func (l *leaderMode) ProposeClusterResize(input Proposal) (*appendLogEntriesLead
 		return nil, ErrCurrentRoleNotLeader
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.node.clusterManager.IsResizeInProgress() {
 		return nil, ErrResizeInProgress
 	}
-	var raftClusterChanges []RaftClusterState
-	if err := json.NewDecoder(bytes.NewReader(input.Data)).Decode(&raftClusterChanges); err != nil {
-		return nil, err
-	}
 
-	nextIndex, appendLogs, result, err := l.appendLogs([]Proposal{input}, logTypeRaftCluster)
+	waiter, result, err := l.appendLogs([]Proposal{input}, rafttypes.LogTypeRaftCluster)
 	if err != nil {
 		return result, err
 	}
 
-	l.node.clusterManager.ProcessResizeClusterEvent(raftClusterChanges)
-	l.configChan <- struct{}{}
-	return l.waitForCommit(appendLogs, nextIndex)
+	l.newAppend <- struct{}{}
+	return &appendLogEntriesLeaderRsp{
+		promise: &waiter,
+	}, nil
 }
 
 func (l *leaderMode) ProposeLogEntry(inputs []Proposal) (*appendLogEntriesLeaderRsp, error) {
@@ -87,88 +81,43 @@ func (l *leaderMode) ProposeLogEntry(inputs []Proposal) (*appendLogEntriesLeader
 		return nil, ErrProposalInputCapLimitExceeded
 	}
 
-	if !l.mu.TryLock() {
-		return nil, ErrInflightPropose
-	}
-	defer l.mu.Unlock()
-
-	nextIndex, appendLogs, result, err := l.appendLogs(inputs, logTypeApplication)
+	waiter, result, err := l.appendLogs(inputs, rafttypes.LogTypeApplication)
 	if err != nil {
 		return result, err
 	}
 
-	return l.waitForCommit(appendLogs, nextIndex)
-}
-
-func (l *leaderMode) appendLogs(inputs []Proposal, logType string) (int64, []rafttypes.AppendLog, *appendLogEntriesLeaderRsp, error) {
-	nextIndex := l.node.nextIndexs.Load()
-	appendLogs := make([]rafttypes.AppendLog, 0, len(inputs))
-	for i := range inputs {
-		appendLogs = append(appendLogs, rafttypes.AppendLog{
-			Index: uint64(nextIndex),
-			Term:  uint64(l.node.currentTerm.Load()),
-			Data:  inputs[i].Data,
-			Type:  logType,
-		})
-		nextIndex++
-	}
-	if err := l.node.persist.Append(appendLogs...); err != nil {
-		return 0, nil, nil, err
-	}
-
-	l.node.nextIndexs.Store(nextIndex)
-	return nextIndex, appendLogs, nil, nil
-}
-
-func (l *leaderMode) waitForCommit(appendLogs []rafttypes.AppendLog, nextIndex int64) (*appendLogEntriesLeaderRsp, error) {
-	commitChan := make(chan bool, 1)
-	l.newAppend <- waiter{
-		index:  nextIndex - 1,
-		commit: commitChan,
-	}
-	timeOutTimer := time.NewTimer(l.proposalTimeout)
-	defer timeOutTimer.Stop()
-	select {
-	case commit := <-commitChan:
-		if commit {
-			l.node.lastCommittedIndex.Store(nextIndex - 1)
-			return &appendLogEntriesLeaderRsp{
-				commit: commit,
-			}, nil
-		}
-		return nil, ErrRaftCommitFailure
-	case <-timeOutTimer.C:
-		return nil, ErrProposalTimeOut
-	}
+	l.newAppend <- struct{}{}
+	return &appendLogEntriesLeaderRsp{
+		promise: &waiter,
+	}, nil
 }
 
 func (l *leaderMode) replicationManager() {
 	for {
 		select {
 		case <-l.ctx.Done():
-			if l.pending != nil {
-				l.pending.commit <- false
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			for _, waiter := range l.waiters {
+				waiter.commit <- false
 			}
+
 			return
-		case pendingWaiter := <-l.newAppend:
+		case <-l.newAppend:
 			for member := range l.followerStateMap {
 				select {
 				case l.followerStateMap[member].newAppendEntry <- struct{}{}:
 				default:
 				}
 			}
-			l.pending = &pendingWaiter
 			l.matchIndex()
 		case <-l.followerStateChange:
-			l.matchIndex()
-		case <-l.configChan:
-			l.followerStateManager()
 			l.matchIndex()
 		}
 	}
 }
 
-func (l *leaderMode) followerStateManager() {
+func (l *leaderMode) followerStateManager(matchIndexSetFunc func(name string, f *followerState)) {
 	members := l.node.clusterManager.GetClusterMembers().members
 	for member := range members {
 		if member == l.node.nodeName {
@@ -183,6 +132,9 @@ func (l *leaderMode) followerStateManager() {
 			ctx:            ctx,
 			cancel:         cancel,
 			matchIndex:     atomic.Int64{},
+		}
+		if matchIndexSetFunc != nil {
+			matchIndexSetFunc(member, stateOfFollower)
 		}
 		l.followerStateMap[member] = stateOfFollower
 		go l.replicationWorker(member, stateOfFollower, l.pulse)
@@ -201,51 +153,76 @@ func (l *leaderMode) followerStateManager() {
 
 func (l *leaderMode) matchIndex() {
 	clusterMembershipState := l.node.clusterManager.GetClusterMembers()
-	oldSetMajority := ((clusterMembershipState.oldMembers) / 2) + 1
-	newSetMajority := ((clusterMembershipState.newMembers) / 2) + 1
-	confirmedInOldSet := 0
-	confirmedInNewSet := 0
 
-	if clusterMembershipState.members[l.node.nodeName].state.inOldSet() {
-		confirmedInOldSet++
+	oldSet := make([]int64, 0, clusterMembershipState.oldMembers)
+	newSet := make([]int64, 0, clusterMembershipState.newMembers)
+
+	selfState := clusterMembershipState.members[l.node.nodeName].state
+	leaderIndex := l.node.nextIndexs.Load() - 1
+	if selfState.inOldSet() {
+		oldSet = append(oldSet, leaderIndex)
 	}
-	if clusterMembershipState.members[l.node.nodeName].state.inNewSet() {
-		confirmedInNewSet++
+	if selfState.inNewSet() {
+		newSet = append(newSet, leaderIndex)
 	}
-	if l.pending == nil {
+	for member, state := range l.followerStateMap {
+		if clusterMembershipState.members[member].state.inOldSet() {
+			oldSet = append(oldSet, state.matchIndex.Load())
+		}
+
+		if clusterMembershipState.members[member].state.inNewSet() {
+			newSet = append(newSet, state.matchIndex.Load())
+		}
+	}
+
+	median := func(v []int64) int64 {
+		if len(v) == 0 {
+			return math.MaxInt64
+		}
+		slices.Sort(v)
+		medianIndex := (len(v) - 1) / 2
+		return v[medianIndex]
+	}
+
+	quromState := min(median(oldSet), median(newSet))
+	if quromState <= l.node.lastCommittedIndex.Load() || quromState < l.node.startIndex.Load() {
 		return
 	}
-	for member := range l.followerStateMap {
-		if l.pending.index > l.followerStateMap[member].matchIndex.Load() {
-			continue
-		}
-		if clusterMembershipState.members[member].state.inOldSet() {
-			confirmedInOldSet++
-		}
-		if clusterMembershipState.members[member].state.inNewSet() {
-			confirmedInNewSet++
-		}
-	}
-	if confirmedInOldSet >= int(oldSetMajority) && (confirmedInNewSet >= int(newSetMajority)) {
-		l.pending.commit <- true
-		l.pending = nil
+
+	l.node.lastCommittedIndex.Store(quromState)
+	select {
+	case l.node.commitIndexAdvanced <- struct{}{}:
+	default:
 	}
 }
 
-func (l *leaderMode) stepDown(term int64) {
-	l.node.mu.Lock()
-	l.node.log.Info("stepping down as leader")
-	defer l.node.mu.Unlock()
-	if l.node.currentTerm.Load() >= term {
-		return
+func (l *leaderMode) appendLogs(inputs []Proposal, logType string) (Waiter, *appendLogEntriesLeaderRsp, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	nextIndex := l.node.nextIndexs.Load()
+	appendLogs := make([]rafttypes.AppendLog, 0, len(inputs))
+	for i := range inputs {
+		appendLogs = append(appendLogs, rafttypes.AppendLog{
+			Index: nextIndex,
+			Term:  l.node.currentTerm.Load(),
+			Data:  inputs[i].Data,
+			Type:  logType,
+		})
+		nextIndex++
 	}
-	l.node.currentTerm.Store(term)
-	if err := l.node.persist.SaveVoteState(term, ""); err != nil {
-		l.node.log.Error("failed to save vote state", zap.Error(err))
+	if err := l.node.persist.Append(appendLogs...); err != nil {
+		return Waiter{}, nil, err
 	}
-	l.cancel()
-	l.node.currentRole.Store(new(RoleFollower))
-	l.node.log.Info("completed stepping down as leader")
+
+	waiter := Waiter{
+		index:  nextIndex - 1,
+		commit: make(chan bool, 1),
+	}
+
+	l.waiters = append(l.waiters, waiter)
+
+	l.node.nextIndexs.Store(nextIndex)
+	return waiter, nil, nil
 }
 
 func (l *leaderMode) replicationWorker(member string, followerState *followerState, pulse time.Duration) {
@@ -295,6 +272,22 @@ func (l *leaderMode) replicate(mp *followerState, member string) error {
 	mp.matchIndex.Store(newMatchIndex)
 	l.followerStateChange <- member
 	return nil
+}
+
+func (l *leaderMode) stepDown(term int64) {
+	l.node.mu.Lock()
+	l.node.log.Info("stepping down as leader")
+	defer l.node.mu.Unlock()
+	if l.node.currentTerm.Load() >= term {
+		return
+	}
+	l.node.currentTerm.Store(term)
+	if err := l.node.persist.SaveVoteState(term, ""); err != nil {
+		l.node.log.Error("failed to save vote state", zap.Error(err))
+	}
+	l.cancel()
+	l.node.currentRole.Store(new(RoleFollower))
+	l.node.log.Info("completed stepping down as leader")
 }
 
 func (l *leaderMode) appendLog(clusterMembers map[string]memberDetails, replicationTargetIndex int64, leadersCommitedIndex int64, leadersCurrentTerm int64, startIndex int64, member string) (*rafttypes.AppendEntiresResponse, error) {
@@ -363,4 +356,34 @@ func (l *leaderMode) getAppendEntries(followersMatchIndex int64, leadersNextInde
 	}
 
 	return appendLogEntries, nil
+}
+
+func (l *leaderMode) run() {
+	go l.replicationManager()
+	<-l.ctx.Done()
+}
+
+func newLeader(node *ClusterNode, leaderInitialData map[string]rafttypes.RequestVoteResponse) *leaderMode {
+	ctx, cancel := context.WithCancel(node.ctx)
+	totalFollowers := len(node.clusterManager.GetClusterMembers().members) - 1
+	leader := &leaderMode{
+		ctx:                 ctx,
+		cancel:              cancel,
+		mu:                  sync.Mutex{},
+		proposalTimeout:     node.writeTimeout,
+		pulse:               node.heartBeat,
+		waiters:             make([]Waiter, 0, 100),
+		newAppend:           make(chan struct{}, 1),
+		followerStateChange: make(chan string, totalFollowers),
+		followerStateMap:    map[string]*followerState{},
+		node:                node,
+	}
+
+	leader.followerStateManager(func(name string, f *followerState) {
+		if leaderInitialData[name].Voted {
+			f.matchIndex.Store(leaderInitialData[name].CommitedIndex)
+		}
+	})
+
+	return leader
 }

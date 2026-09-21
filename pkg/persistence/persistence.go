@@ -3,8 +3,10 @@ package persistence
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -13,8 +15,10 @@ import (
 
 type Persistence interface {
 	Truncate(fromIndex int64) error
+	GetRaftClusterConfigLogs() ([]rafttypes.RaftClusterState, error)
 	LastReadVoteState() (currentTerm int64, votedFor string, err error)
 	SaveVoteState(currentTerm int64, votedFor string) error
+	ReadLogIndex(Index int64) (*rafttypes.AppendLog, error)
 	ReadLogs(startIndex int64, endIndex int64) ([]*rafttypes.AppendLog, error)
 	Append(logs ...rafttypes.AppendLog) error
 }
@@ -23,6 +27,29 @@ type filePersistence struct {
 	basePath  string
 	EndoffSet int64
 	logCache  *logCache
+}
+
+// ReadLogIndex implements [Persistence].
+func (f *filePersistence) ReadLogIndex(Index int64) (*rafttypes.AppendLog, error) {
+	if log, err := f.logCache.getLog(Index); err == nil {
+		return &log, nil
+	}
+	file, err := os.Open(f.basePath + fileRaftLog)
+	if err != nil {
+		return nil, err
+	}
+
+	defer file.Close()
+	for {
+		logFile, err := readRaftLog(file)
+		if err != nil {
+			return nil, err
+		}
+
+		if logFile.log.Index == Index {
+			return logFile.log, nil
+		}
+	}
 }
 
 var _ Persistence = (*filePersistence)(nil)
@@ -79,7 +106,7 @@ func (f *filePersistence) LastReadVoteState() (currentTerm int64, votedFor strin
 	}
 	currentTerm = int64(binary.BigEndian.Uint64(data[0:8]))
 	stringLen := int(binary.BigEndian.Uint64(data[8:16]))
-	votedFor = string(data[16:stringLen])
+	votedFor = string(data[16 : 16+stringLen])
 
 	return
 }
@@ -100,15 +127,15 @@ func (f *filePersistence) ReadLogs(startIndex int64, endIndex int64) ([]*rafttyp
 	for {
 		logFile, err := readRaftLog(file)
 		if err != nil {
-			return nil, err
+			return logs, err
 		}
 
-		if logFile.log.Index == uint64(endIndex) {
+		if logFile.log.Index == endIndex {
 			logs = append(logs, logFile.log)
 			break
 		}
 
-		if logFile.log.Index >= uint64(startIndex) {
+		if logFile.log.Index >= startIndex {
 			logs = append(logs, logFile.log)
 		}
 	}
@@ -149,4 +176,30 @@ func crcAppendLog(log *rafttypes.AppendLog) (uint32, error) {
 	}
 
 	return h.Sum32(), nil
+}
+
+// GetRaftClusterConfigLogs implements [Persistence].
+func (f *filePersistence) GetRaftClusterConfigLogs() ([]rafttypes.RaftClusterState, error) {
+	stateLogs := []rafttypes.RaftClusterState{}
+	startIndex := int64(0)
+	for {
+		logs, err := f.ReadLogs(startIndex, startIndex+64)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		startIndex += 65
+		for _, log := range logs {
+			if log.Type == rafttypes.LogTypeRaftCluster {
+				var raftClusterChange rafttypes.RaftClusterState
+				if err := json.NewDecoder(bytes.NewReader(log.Data)).Decode(&raftClusterChange); err != nil {
+					return nil, err
+				}
+				stateLogs = append(stateLogs, raftClusterChange)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return stateLogs, nil
+		}
+
+	}
 }

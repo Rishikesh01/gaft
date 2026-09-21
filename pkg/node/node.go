@@ -1,6 +1,8 @@
 package node
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,11 +20,6 @@ const (
 	RoleLearner   NodeRole = "Learner"
 )
 
-const (
-	logTypeApplication = "application"
-	logTypeRaftCluster = "raft_cluster"
-)
-
 type ClusterNode struct {
 	mu sync.Mutex
 	// identity of the node
@@ -36,38 +33,60 @@ type ClusterNode struct {
 
 	heartBeatTimeout time.Duration
 
-	lastAppliedIndex   int64
-	lastCommittedIndex atomic.Int64
+	lastAppliedIndex    int64
+	lastCommittedIndex  atomic.Int64
+	commitIndexAdvanced chan struct{}
 
+	startIndex atomic.Int64
 	nextIndexs atomic.Int64
 	// member name
-	votedFor string
+	votedFor atomic.Value
 	log      zap.SugaredLogger
 
 	transport     Sender
 	snapshot      Snapshot
 	persist       persistence.Persistence
 	snapshotIndex atomic.Int64
+	ctx           context.Context
+	cancel        context.CancelFunc
+
+	writeTimeout time.Duration
+	heartBeat    time.Duration
 }
 
-func NewClusterNode(nodeName string, log zap.SugaredLogger) *ClusterNode {
-	node := &ClusterNode{log: log, nodeName: nodeName}
+func NewClusterNode(ctx context.Context, nodeName string, log zap.SugaredLogger, writeTimeout time.Duration, heartBeat time.Duration) *ClusterNode {
+	childCtx, cancel := context.WithCancel(ctx)
+	node := &ClusterNode{log: log, nodeName: nodeName, commitIndexAdvanced: make(chan struct{}, 1), ctx: childCtx, cancel: cancel}
+	node.startIndex.Store(1)
 	node.nextIndexs.Store(1)
 	node.currentRole.Store(new(RoleLearner))
+	node.votedFor.Store("")
+	node.writeTimeout = writeTimeout
+	node.heartBeat = heartBeat
+
 	return node
 }
 
-func BootStrapCluster(nodeName string, log zap.SugaredLogger, clusterMember map[string]string) *ClusterNode {
-	node := NewClusterNode(nodeName, log)
+func BootStrapCluster(ctx context.Context, nodeName string, log zap.SugaredLogger, clusterMember map[string]string, writeTimeout time.Duration, heartBeat time.Duration) *ClusterNode {
+	node := NewClusterNode(ctx, nodeName, log, writeTimeout, heartBeat)
 	node.clusterManager = NewClusterMemberManager(clusterMember)
 	return node
 }
 
 func (c *ClusterNode) NodeTypeWatcher() {
+	var leader *leaderMode
 	for {
 		switch *c.currentRole.Load() {
 		case RoleLeader:
+			leader.run()
 		case RoleCandidate:
+			leaderConstuctionData, err := newCandidate(c).RequestVoteFromPeers()
+			if err == nil {
+				leader = newLeader(c, leaderConstuctionData)
+			}
+			if err != nil && !errors.Is(err, ErrCannotCampain) && !errors.Is(err, ErrElectionNotWon) {
+				return
+			}
 		case RoleLearner:
 		default:
 		}

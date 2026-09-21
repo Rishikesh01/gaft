@@ -1,5 +1,23 @@
 package rafttypes
 
+type ResizeType string
+
+const (
+	ResizeAdd    = "add"
+	ResizeRemove = "remove"
+)
+
+const (
+	LogTypeApplication = "application"
+	LogTypeRaftCluster = "raft_cluster"
+)
+
+type RaftClusterState struct {
+	NodeName string
+	NodeIP   string
+	Change   ResizeType
+}
+
 type AppendEntriesInput struct {
 	Term         int64
 	PrevLogIndex int64
@@ -23,13 +41,14 @@ type RequestVoteInput struct {
 }
 
 type RequestVoteResponse struct {
-	Term  int64
-	Voted bool
+	Term          int64
+	Voted         bool
+	CommitedIndex int64
 }
 
 type AppendLog struct {
-	Index uint64
-	Term  uint64
+	Index int64
+	Term  int64
 	Type  string
 	Data  []byte
 }

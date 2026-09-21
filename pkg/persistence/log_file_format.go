@@ -31,8 +31,8 @@ func (f *fileFormatRaftLogs) Store(w io.Writer) error {
 func writeLog(w io.Writer, log *rafttypes.AppendLog) error {
 	var buf [32]byte
 
-	binary.BigEndian.PutUint64(buf[0:8], log.Index)
-	binary.BigEndian.PutUint64(buf[8:16], log.Term)
+	binary.BigEndian.PutUint64(buf[0:8], uint64(log.Index))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(log.Term))
 	binary.BigEndian.PutUint64(buf[16:24], uint64(len(log.Type)))
 	binary.BigEndian.PutUint64(buf[24:32], uint64(len(log.Data)))
 
@@ -74,8 +74,8 @@ func readRaftLog(r io.Reader) (fileFormatRaftLogs, error) {
 		return fileFormatRaftLogs{}, err
 	}
 	log := &rafttypes.AppendLog{
-		Index: index,
-		Term:  term,
+		Index: int64(index),
+		Term:  int64(term),
 		Type:  string(logType),
 		Data:  data,
 	}

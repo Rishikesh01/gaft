@@ -358,3 +358,7 @@ func (l *leaderMode) getAppendEntries(followersMatchIndex int64, leadersNextInde
 
 	return appendLogEntries, nil
 }
+
+func (l *leaderMode) Run() {
+	<-l.ctx.Done()
+}

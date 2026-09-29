@@ -62,9 +62,11 @@ func BootStrapCluster(nodeName string, log zap.SugaredLogger, clusterMember map[
 }
 
 func (c *ClusterNode) NodeTypeWatcher() {
+	var leader *leaderMode
 	for {
 		switch *c.currentRole.Load() {
 		case RoleLeader:
+			leader.Run()
 		case RoleCandidate:
 		case RoleLearner:
 		default:

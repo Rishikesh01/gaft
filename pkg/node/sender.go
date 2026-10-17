@@ -2,6 +2,11 @@ package node
 
 import "github.com/Rishikesh01/gaft/pkg/rafttypes"
 
+type Transport interface {
+	Sender
+	Receiver() <-chan rafttypes.RPC
+}
+
 type Sender interface {
 	// Used to replicate Log and as heartBeat by leader
 	UpdatePeers(map[string]string)

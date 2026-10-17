@@ -12,13 +12,27 @@ var ErrAlreadyVoted = errors.New("voted for the current term")
 func (c *ClusterNode) AppendEntries(input rafttypes.AppendEntriesInput) (*rafttypes.AppendEntiresResponse, error) {
 	switch *c.currentRole.Load() {
 	case RoleCandidate:
+		if input.Term >= c.currentTerm.Load() {
+			c.currentRole.Store(new(RoleFollower))
+		}
+		rsp, err := c.appendEntriesFollower(input)
+		if err != nil {
+			return nil, err
+		}
+		return rsp, err
 	case RoleFollower:
-	case RoleLeader:
 		return c.appendEntriesFollower(input)
+	case RoleLeader:
+		if input.Term >= c.currentTerm.Load() {
+			c.currentRole.Store(new(RoleFollower))
+		}
+		rsp, err := c.appendEntriesFollower(input)
+		if err != nil {
+			return nil, err
+		}
+		return rsp, err
 	case RoleLearner:
 		return c.appendEntriesFollower(input)
-	default:
-		panic("unexpected node.NodeRole")
 	}
 
 	return nil, nil

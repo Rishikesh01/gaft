@@ -30,6 +30,7 @@ var (
 type leaderMode struct {
 	ctx                 context.Context
 	cancel              context.CancelFunc
+	higherTerm          chan int64
 	mu                  sync.Mutex
 	proposalTimeout     time.Duration
 	pulse               time.Duration
@@ -38,6 +39,8 @@ type leaderMode struct {
 	followerStateChange chan string
 	followerStateMap    map[string]*followerState
 	node                *ClusterNode
+	leaderTerm          int64
+	startIndex          int64
 }
 
 type Waiter struct {
@@ -117,6 +120,13 @@ func (l *leaderMode) replicationManager() {
 	}
 }
 
+func (l *leaderMode) processRPC(rpc rafttypes.RPC) {
+	l.node.processRPC(rpc)
+	if *l.node.currentRole.Load() != RoleLeader {
+		l.cancel()
+	}
+}
+
 func (l *leaderMode) followerStateManager(matchIndexSetFunc func(name string, f *followerState)) {
 	members := l.node.clusterManager.GetClusterMembers().members
 	for member := range members {
@@ -185,7 +195,7 @@ func (l *leaderMode) matchIndex() {
 	}
 
 	quromState := min(median(oldSet), median(newSet))
-	if quromState <= l.node.lastCommittedIndex.Load() || quromState < l.node.startIndex.Load() {
+	if quromState <= l.node.lastCommittedIndex.Load() || quromState < l.startIndex {
 		return
 	}
 
@@ -204,7 +214,7 @@ func (l *leaderMode) appendLogs(inputs []Proposal, logType string) (Waiter, *app
 	for i := range inputs {
 		appendLogs = append(appendLogs, &rafttypes.AppendLog{
 			Index: nextIndex,
-			Term:  l.node.currentTerm.Load(),
+			Term:  l.leaderTerm,
 			Data:  inputs[i].Data,
 			Type:  logType,
 		})
@@ -244,7 +254,6 @@ func (l *leaderMode) replicate(mp *followerState, member string) error {
 	replicaMatchIndex := mp.matchIndex.Load()
 	leadersNextIndex := l.node.nextIndexs.Load()
 	leadersCommitedIndex := l.node.lastCommittedIndex.Load()
-	leadersCurrentTerm := l.node.currentTerm.Load()
 	clusterMembers := l.node.clusterManager.GetClusterMembers().members
 	if l.node.snapshotIndex.Load() > replicaMatchIndex {
 		if _, err := l.node.transport.InstallSnapshot(member, rafttypes.InstallSnapshotInput{}); err != nil {
@@ -255,7 +264,7 @@ func (l *leaderMode) replicate(mp *followerState, member string) error {
 
 	replicationTargetIndex := min(leadersNextIndex, replicaMatchIndex+inputEntriesCap)
 
-	resp, err := l.appendLog(clusterMembers, replicationTargetIndex, leadersCommitedIndex, leadersCurrentTerm, replicaMatchIndex, member)
+	resp, err := l.appendLog(clusterMembers, replicationTargetIndex, leadersCommitedIndex, replicaMatchIndex, member)
 	if err != nil && !errors.Is(err, ErrAppendEntryMisMatch) {
 		l.node.log.Error("error occured while trying to append entry", zap.Error(err), zap.String("member", string(member)), zap.String("member_ip", clusterMembers[member].ip))
 		return err
@@ -281,17 +290,18 @@ func (l *leaderMode) stepDown(term int64) {
 	if l.node.currentTerm.Load() >= term {
 		return
 	}
-	l.node.currentTerm.Store(term)
 	if err := l.node.persist.SaveVoteState(term, ""); err != nil {
 		l.node.log.Error("failed to save vote state", zap.Error(err))
+		return
 	}
+	l.node.currentTerm.Store(term)
 	l.cancel()
 	l.node.currentRole.Store(new(RoleFollower))
 	l.node.log.Info("completed stepping down as leader")
 }
 
-func (l *leaderMode) appendLog(clusterMembers map[string]memberDetails, replicationTargetIndex int64, leadersCommitedIndex int64, leadersCurrentTerm int64, startIndex int64, member string) (*rafttypes.AppendEntiresResponse, error) {
-	appendEntries, err := l.getAppendEntries(startIndex, replicationTargetIndex, leadersCurrentTerm, leadersCommitedIndex)
+func (l *leaderMode) appendLog(clusterMembers map[string]memberDetails, replicationTargetIndex int64, leadersCommitedIndex int64, startIndex int64, member string) (*rafttypes.AppendEntiresResponse, error) {
+	appendEntries, err := l.getAppendEntries(startIndex, replicationTargetIndex, leadersCommitedIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -301,9 +311,12 @@ func (l *leaderMode) appendLog(clusterMembers map[string]memberDetails, replicat
 	}
 
 	if !resp.Success {
-		if resp.Term > leadersCurrentTerm {
+		if resp.Term > l.leaderTerm {
+			select {
+			case l.higherTerm <- resp.Term:
+			case <-l.ctx.Done():
+			}
 			l.node.log.Info("appending entry to follower failed, due to follower having greater term", zap.String("member", string(member)), zap.String("member_ip", clusterMembers[member].ip))
-			l.stepDown(resp.Term)
 			return nil, ErrMembersCurrentTermHigher
 		}
 
@@ -313,13 +326,13 @@ func (l *leaderMode) appendLog(clusterMembers map[string]memberDetails, replicat
 	return nil, nil
 }
 
-func (l *leaderMode) getAppendEntries(followersMatchIndex int64, leadersNextIndex int64, leadersCurrentTerm int64, leadersCommitedIndex int64) (rafttypes.AppendEntriesInput, error) {
+func (l *leaderMode) getAppendEntries(followersMatchIndex int64, leadersNextIndex int64, leadersCommitedIndex int64) (rafttypes.AppendEntriesInput, error) {
 	startIndex := followersMatchIndex
 	endIndex := max(leadersNextIndex-1, 0)
 
 	if endIndex == 0 {
 		return rafttypes.AppendEntriesInput{
-			Term:         leadersCurrentTerm,
+			Term:         l.leaderTerm,
 			PrevLogIndex: 0,
 			PrevLogTerm:  0,
 			LeaderCommit: leadersCommitedIndex,
@@ -340,7 +353,7 @@ func (l *leaderMode) getAppendEntries(followersMatchIndex int64, leadersNextInde
 	}
 
 	appendLogEntries := rafttypes.AppendEntriesInput{
-		Term:         leadersCurrentTerm,
+		Term:         l.leaderTerm,
 		PrevLogIndex: int64(logs[0].Index),
 		PrevLogTerm:  int64(logs[0].Term),
 		LeaderCommit: leadersCommitedIndex,
@@ -360,12 +373,35 @@ func (l *leaderMode) getAppendEntries(followersMatchIndex int64, leadersNextInde
 
 func (l *leaderMode) run() {
 	go l.replicationManager()
-	<-l.ctx.Done()
+
+	for {
+		select {
+		case rpc := <-l.node.transport.Receiver():
+			l.processRPC(rpc)
+		case term := <-l.higherTerm:
+			l.stepDown(term)
+		case <-l.ctx.Done():
+			return
+		}
+	}
 }
 
 func newLeader(node *ClusterNode, leaderInitialData map[string]rafttypes.RequestVoteResponse) *leaderMode {
 	ctx, cancel := context.WithCancel(node.ctx)
 	totalFollowers := len(node.clusterManager.GetClusterMembers().members) - 1
+	currentIndex := node.nextIndexs.Load()
+
+	if err := node.persist.Append(&rafttypes.AppendLog{
+		Index: currentIndex,
+		Term:  node.currentTerm.Load(),
+		Type:  rafttypes.LogTypeNewTermLeader,
+		Data:  []byte("new term"),
+	}); err != nil {
+		node.log.Panic("failed to start leader", zap.Error(err))
+		return nil
+	}
+	node.nextIndexs.Add(1)
+
 	leader := &leaderMode{
 		ctx:                 ctx,
 		cancel:              cancel,
@@ -376,7 +412,10 @@ func newLeader(node *ClusterNode, leaderInitialData map[string]rafttypes.Request
 		newAppend:           make(chan struct{}, 1),
 		followerStateChange: make(chan string, totalFollowers),
 		followerStateMap:    map[string]*followerState{},
+		leaderTerm:          node.currentTerm.Load(),
 		node:                node,
+		higherTerm:          make(chan int64, 1),
+		startIndex:          currentIndex,
 	}
 
 	leader.followerStateManager(func(name string, f *followerState) {

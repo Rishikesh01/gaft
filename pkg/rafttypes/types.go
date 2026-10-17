@@ -8,8 +8,9 @@ const (
 )
 
 const (
-	LogTypeApplication = "application"
-	LogTypeRaftCluster = "raft_cluster"
+	LogTypeNewTermLeader = "new_term_leader"
+	LogTypeApplication   = "application"
+	LogTypeRaftCluster   = "raft_cluster"
 )
 
 type RaftClusterState struct {
@@ -73,4 +74,16 @@ func (i *InstallSnapshotInput) Size() int64 {
 
 type InstallSnapshotResponse struct {
 	Term int64
+}
+
+type RPC struct {
+	AppendEntries *AppendEntriesInput
+	RequestVote   *RequestVoteInput
+	Reply         chan RPCReply
+}
+
+type RPCReply struct {
+	AppendEntries *AppendEntiresResponse
+	RequestVote   *RequestVoteResponse
+	Err           error
 }

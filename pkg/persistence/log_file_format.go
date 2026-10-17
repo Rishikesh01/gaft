@@ -1,95 +1,59 @@
 package persistence
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"io"
 
 	"github.com/Rishikesh01/gaft/pkg/rafttypes"
 )
 
-type fileFormatRaftLogs struct {
-	crc uint32
-	log *rafttypes.AppendLog
+const recordHeaderSize = 4 + 32
+
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+func encodeLog(buf []byte, log *rafttypes.AppendLog) []byte {
+	start := len(buf)
+	buf = append(buf, 0, 0, 0, 0)
+	buf = binary.BigEndian.AppendUint64(buf, uint64(log.Index))
+	buf = binary.BigEndian.AppendUint64(buf, uint64(log.Term))
+	buf = binary.BigEndian.AppendUint64(buf, uint64(len(log.Type)))
+	buf = binary.BigEndian.AppendUint64(buf, uint64(len(log.Data)))
+	buf = append(buf, log.Type...)
+	buf = append(buf, log.Data...)
+	binary.BigEndian.PutUint32(buf[start:], crc32.Checksum(buf[start+4:], castagnoli))
+	return buf
 }
 
-func (f *fileFormatRaftLogs) Store(w io.Writer) error {
-	var buf [4]byte
-
-	binary.BigEndian.PutUint32(buf[:], f.crc)
-	if _, err := w.Write(buf[:]); err != nil {
-		return err
-	}
-
-	if err := writeLog(w, f.log); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func writeLog(w io.Writer, log *rafttypes.AppendLog) error {
-	var buf [32]byte
-
-	binary.BigEndian.PutUint64(buf[0:8], uint64(log.Index))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(log.Term))
-	binary.BigEndian.PutUint64(buf[16:24], uint64(len(log.Type)))
-	binary.BigEndian.PutUint64(buf[24:32], uint64(len(log.Data)))
-
-	if _, err := w.Write(buf[:]); err != nil {
-		return err
-	}
-
-	_, err := w.Write([]byte(log.Type))
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(log.Data)
-	return err
-}
-
-func readRaftLog(r io.Reader) (fileFormatRaftLogs, error) {
-	var crc uint32
-	if err := binary.Read(r, binary.BigEndian, &crc); err != nil {
-		return fileFormatRaftLogs{}, err
-	}
-
-	var hdr [32]byte
+func decodeLog(r *bytes.Reader) (*rafttypes.AppendLog, error) {
+	var hdr [recordHeaderSize]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return fileFormatRaftLogs{}, err
+		return nil, err
+	}
+	typeLen := binary.BigEndian.Uint64(hdr[20:28])
+	dataLen := binary.BigEndian.Uint64(hdr[28:36])
+	if typeLen > uint64(r.Len()) || dataLen > uint64(r.Len())-typeLen {
+		return nil, errors.New("raft log record is corrupted")
 	}
 
-	index := binary.BigEndian.Uint64(hdr[0:8])
-	term := binary.BigEndian.Uint64(hdr[8:16])
-	typeLen := binary.BigEndian.Uint64(hdr[16:24])
-	dataLen := binary.BigEndian.Uint64(hdr[24:32])
-
-	logType := make([]byte, typeLen)
-	if _, err := io.ReadFull(r, logType); err != nil {
-		return fileFormatRaftLogs{}, err
-	}
-	data := make([]byte, dataLen)
-	if _, err := io.ReadFull(r, data); err != nil {
-		return fileFormatRaftLogs{}, err
-	}
-	log := &rafttypes.AppendLog{
-		Index: int64(index),
-		Term:  int64(term),
-		Type:  string(logType),
-		Data:  data,
+	payload := make([]byte, typeLen+dataLen)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, err
 	}
 
-	verificationCRC, err := crcAppendLog(log)
-	if err != nil {
-		return fileFormatRaftLogs{}, err
-	}
-	if crc != verificationCRC {
-		return fileFormatRaftLogs{}, errors.New("raft log on disk is corrupted")
+	h := crc32.New(castagnoli)
+	h.Write(hdr[4:])
+	h.Write(payload)
+	if h.Sum32() != binary.BigEndian.Uint32(hdr[:4]) {
+		return nil, errors.New("raft log record is corrupted")
 	}
 
-	return fileFormatRaftLogs{
-		crc: crc,
-		log: log,
+	return &rafttypes.AppendLog{
+		Index: int64(binary.BigEndian.Uint64(hdr[4:12])),
+		Term:  int64(binary.BigEndian.Uint64(hdr[12:20])),
+		Type:  string(payload[:typeLen]),
+		Data:  payload[typeLen:],
 	}, nil
 }

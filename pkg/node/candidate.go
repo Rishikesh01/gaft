@@ -1,8 +1,8 @@
 package node
 
 import (
+	"context"
 	"errors"
-	"sync"
 
 	"github.com/Rishikesh01/gaft/pkg/rafttypes"
 	"go.uber.org/zap"
@@ -14,29 +14,42 @@ var (
 )
 
 type candidate struct {
-	node *ClusterNode
+	ctx    context.Context
+	cancel context.CancelFunc
+	node   *ClusterNode
 }
 
 func newCandidate(node *ClusterNode) *candidate {
+	ctx, cancel := context.WithCancel(node.ctx)
 	return &candidate{
-		node: node,
+		ctx:    ctx,
+		cancel: cancel,
+		node:   node,
 	}
 }
 
 func (c *candidate) RequestVoteFromPeers() (map[string]rafttypes.RequestVoteResponse, error) {
+	defer c.cancel()
 	currentTerm, clusterMembmers, log, err := c.prepareForCompain()
 	if err != nil {
 		return nil, err
 	}
+	if len(clusterMembmers.members) == 1 {
+		return c.campainResult(clusterMembmers, map[string]rafttypes.RequestVoteResponse{}, currentTerm)
+	}
 
-	voteResponseMap := sync.Map{}
-
-	var wg sync.WaitGroup
+	voteResponseMap := map[string]rafttypes.RequestVoteResponse{}
+	type voteRsp struct {
+		member string
+		vote   rafttypes.RequestVoteResponse
+		err    error
+	}
+	voteRespChan := make(chan voteRsp, len(clusterMembmers.members)-1)
 	for member, details := range clusterMembmers.members {
 		if member == c.node.nodeName {
 			continue
 		}
-		wg.Go(func() {
+		go func() {
 			resp, err := c.node.transport.RequestVote(member, rafttypes.RequestVoteInput{
 				Term:          currentTerm,
 				LastLogIndex:  log.Index,
@@ -46,19 +59,55 @@ func (c *candidate) RequestVoteFromPeers() (map[string]rafttypes.RequestVoteResp
 			if err != nil {
 				// retry with backoff needs to be added
 				c.node.log.Error("requesting vote failed with error", zap.Error(err), zap.String("member", member), zap.String("ip", details.ip))
+				voteRespChan <- voteRsp{
+					member: member,
+					err:    err,
+				}
 				return
 			}
-
-			voteResponseMap.Store(member, resp)
-		})
+			voteRespChan <- voteRsp{
+				member: member,
+				vote:   resp,
+			}
+		}()
 	}
 
-	wg.Wait()
+	totalResponseCount := 0
+outer:
+	for {
+		select {
+		case <-c.ctx.Done():
+			return nil, c.ctx.Err()
+		case <-c.node.electionTimer.C:
+			c.node.electionTimer.Reset(c.node.randomizedElectionTimerDuration())
+			c.node.currentRole.Store(new(RoleCandidate))
+			c.cancel()
+			return nil, ErrElectionNotWon
+		case rpc := <-c.node.transport.Receiver():
+			c.node.processRPC(rpc)
+			if *c.node.currentRole.Load() != RoleCandidate {
+				c.cancel()
+				return nil, ErrElectionNotWon
+			}
+		case v := <-voteRespChan:
+			totalResponseCount++
+			if v.err == nil {
+				voteResponseMap[v.member] = v.vote
+			}
+			if totalResponseCount == len(clusterMembmers.members)-1 {
+				break outer
+			}
 
-	return c.campainResult(clusterMembmers, &voteResponseMap, currentTerm)
+		}
+	}
+
+	return c.campainResult(clusterMembmers, voteResponseMap, currentTerm)
 }
 
-func (c *candidate) campainResult(clusterMembmers *clusterMemberConfig, voteResponseMap *sync.Map, currentTerm int64) (map[string]rafttypes.RequestVoteResponse, error) {
+func (c *candidate) campainResult(clusterMembmers *clusterMemberConfig, voteResponseMap map[string]rafttypes.RequestVoteResponse, currentTerm int64) (map[string]rafttypes.RequestVoteResponse, error) {
+	if *c.node.currentRole.Load() != RoleCandidate {
+		return nil, ErrElectionNotWon
+	}
 	var (
 		oldMembersCount int
 		newMembersCount int
@@ -70,11 +119,8 @@ func (c *candidate) campainResult(clusterMembmers *clusterMemberConfig, voteResp
 	if clusterMembmers.members[c.node.nodeName].state.inOldSet() {
 		oldMembersCount++
 	}
-	leaderConstructionMap := map[string]rafttypes.RequestVoteResponse{}
-	voteResponseMap.Range(func(key, value any) bool {
-		member := key.(string)
-		resp := value.(rafttypes.RequestVoteResponse)
-		leaderConstructionMap[member] = resp
+
+	for member, resp := range voteResponseMap {
 		if resp.Voted && clusterMembmers.members[member].state.inNewSet() {
 			newMembersCount++
 		}
@@ -85,16 +131,14 @@ func (c *candidate) campainResult(clusterMembmers *clusterMemberConfig, voteResp
 		if !resp.Voted {
 			highestTerm = max(highestTerm, resp.Term)
 		}
-
-		return true
-	})
+	}
 
 	if currentTerm < highestTerm {
-		c.node.currentTerm.Store(highestTerm)
 		if err := c.node.persist.SaveVoteState(highestTerm, ""); err != nil {
 			c.node.log.Error("failed to save term update while campaining", zap.Error(err))
 			return nil, err
 		}
+		c.node.currentTerm.Store(highestTerm)
 		c.node.votedFor.Store("")
 		c.node.currentRole.Store(new(RoleFollower))
 		return nil, ErrElectionNotWon
@@ -106,7 +150,7 @@ func (c *candidate) campainResult(clusterMembmers *clusterMemberConfig, voteResp
 	}
 
 	c.node.currentRole.Store(new(RoleLeader))
-	return leaderConstructionMap, nil
+	return voteResponseMap, nil
 }
 
 func (c *candidate) prepareForCompain() (int64, *clusterMemberConfig, *rafttypes.AppendLog, error) {
@@ -114,8 +158,9 @@ func (c *candidate) prepareForCompain() (int64, *clusterMemberConfig, *rafttypes
 	clusterMembmers := c.node.clusterManager.GetClusterMembers()
 	currentIndex := c.node.nextIndexs.Load() - 1
 
-	if *c.node.currentRole.Load() == RoleLearner {
+	if *c.node.currentRole.Load() == RoleLearner || currentIndex == 0 {
 		// if candidate does not has any entry then they can't campain
+		c.node.currentRole.Store(new(RoleLearner))
 		return 0, nil, nil, ErrCannotCampain
 	}
 
@@ -125,11 +170,12 @@ func (c *candidate) prepareForCompain() (int64, *clusterMemberConfig, *rafttypes
 		return 0, nil, nil, err
 	}
 
-	c.node.currentTerm.Store(currentTerm)
 	if err := c.node.persist.SaveVoteState(currentTerm, c.node.nodeName); err != nil {
 		c.node.log.Error("failed to save self vote", zap.Error(err))
 		return 0, nil, nil, err
 	}
+
+	c.node.currentTerm.Store(currentTerm)
 	c.node.votedFor.Store(c.node.nodeName)
 
 	return currentTerm, clusterMembmers, logs, nil

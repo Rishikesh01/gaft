@@ -1,44 +1,31 @@
 package persistence
 
-import (
-	"io"
-	"sync"
+import "github.com/Rishikesh01/gaft/pkg/rafttypes"
 
-	"github.com/Rishikesh01/gaft/pkg/rafttypes"
-)
+const cacheEntries = 1024
 
 type logCache struct {
-	mu           sync.Mutex
-	logs         [256]*rafttypes.AppendLog
-	currentIndex uint64
+	logs [cacheEntries]*rafttypes.AppendLog
 }
 
-// circular buffer
-func (l *logCache) appendToCache(logs ...*rafttypes.AppendLog) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.currentIndex == uint64(len(l.logs)) {
-		l.currentIndex = 0
-	}
-
+func (c *logCache) put(logs ...*rafttypes.AppendLog) {
 	for _, log := range logs {
-		l.logs[l.currentIndex] = log
-		l.currentIndex++
-		if l.currentIndex == uint64(len(l.logs)) {
-			l.currentIndex = 0
+		c.logs[log.Index%cacheEntries] = log
+	}
+}
+
+func (c *logCache) evictFrom(index int64) {
+	for i, log := range c.logs {
+		if log != nil && log.Index >= index {
+			c.logs[i] = nil
 		}
 	}
 }
 
-func (l *logCache) getLog(index int64) (rafttypes.AppendLog, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	for _, log := range l.logs {
-		if log != nil && log.Index == index {
-			return *log, nil
-		}
+func (c *logCache) get(index int64) *rafttypes.AppendLog {
+	log := c.logs[index%cacheEntries]
+	if log == nil || log.Index != index {
+		return nil
 	}
-
-	return rafttypes.AppendLog{}, io.EOF
+	return log
 }

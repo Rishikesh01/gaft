@@ -10,7 +10,80 @@ import (
 var ErrAlreadyVoted = errors.New("voted for the current term")
 
 func (c *ClusterNode) AppendEntries(input rafttypes.AppendEntriesInput) (*rafttypes.AppendEntiresResponse, error) {
-	panic("unimplemented")
+	switch *c.currentRole.Load() {
+	case RoleCandidate:
+	case RoleFollower:
+	case RoleLeader:
+		return c.appendEntriesFollower(input)
+	case RoleLearner:
+		return c.appendEntriesFollower(input)
+	default:
+		panic("unexpected node.NodeRole")
+	}
+
+	return nil, nil
+}
+
+func (c *ClusterNode) appendEntriesFollower(input rafttypes.AppendEntriesInput) (*rafttypes.AppendEntiresResponse, error) {
+	curretTerm := c.currentTerm.Load()
+	commitIndex := c.lastCommittedIndex.Load()
+	if input.Term < curretTerm {
+		return &rafttypes.AppendEntiresResponse{
+			Term:        curretTerm,
+			Success:     false,
+			CommitIndex: commitIndex,
+		}, nil
+	}
+	if input.Term > curretTerm {
+		if err := c.recordVote("", curretTerm, input.Term); err != nil {
+			return nil, err
+		}
+		curretTerm = c.currentTerm.Load()
+	}
+
+	if c.nextIndexs.Load()-1 != 0 || input.PrevLogIndex != 0 {
+		if input.PrevLogIndex > c.nextIndexs.Load()-1 {
+			return &rafttypes.AppendEntiresResponse{
+				Term:        curretTerm,
+				Success:     false,
+				CommitIndex: commitIndex,
+			}, nil
+		}
+
+		appendLog, err := c.persist.ReadLogIndex(input.PrevLogIndex)
+		if err != nil {
+			return nil, err
+		}
+
+		if appendLog.Term != input.PrevLogTerm {
+			return &rafttypes.AppendEntiresResponse{
+				Term:        curretTerm,
+				Success:     false,
+				CommitIndex: commitIndex,
+			}, nil
+		}
+	}
+
+	if len(input.Entry) == 0 {
+		c.lastCommittedIndex.Store(max(min(input.LeaderCommit, input.PrevLogIndex), commitIndex))
+		return &rafttypes.AppendEntiresResponse{
+			Term:        curretTerm,
+			Success:     true,
+			CommitIndex: commitIndex,
+		}, nil
+	}
+
+	if err := c.persist.Append(input.Entry...); err != nil {
+		return nil, err
+	}
+
+	c.lastCommittedIndex.Store(max(min(input.LeaderCommit, input.Entry[len(input.Entry)-1].Index), commitIndex))
+	c.nextIndexs.Store(input.Entry[len(input.Entry)-1].Index + 1)
+	return &rafttypes.AppendEntiresResponse{
+		Term:        curretTerm,
+		Success:     true,
+		CommitIndex: commitIndex,
+	}, nil
 }
 
 func (c *ClusterNode) RequestVote(input rafttypes.RequestVoteInput) (*rafttypes.RequestVoteResponse, error) {
@@ -73,10 +146,10 @@ func (c *ClusterNode) RequestVote(input rafttypes.RequestVoteInput) (*rafttypes.
 }
 
 func (c *ClusterNode) recordVote(candidateName string, currentTerm int64, newTerm int64) error {
-	if newTerm > currentTerm {
-		c.votedFor.Store("")
-	}
 	lastCandidatedVoted := c.votedFor.Load().(string)
+	if newTerm > currentTerm {
+		lastCandidatedVoted = ""
+	}
 	// on crash we will restore this from disk
 	if lastCandidatedVoted != candidateName && lastCandidatedVoted != "" {
 		return ErrAlreadyVoted

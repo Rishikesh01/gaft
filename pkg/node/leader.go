@@ -200,9 +200,9 @@ func (l *leaderMode) appendLogs(inputs []Proposal, logType string) (Waiter, *app
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	nextIndex := l.node.nextIndexs.Load()
-	appendLogs := make([]rafttypes.AppendLog, 0, len(inputs))
+	appendLogs := make([]*rafttypes.AppendLog, 0, len(inputs))
 	for i := range inputs {
-		appendLogs = append(appendLogs, rafttypes.AppendLog{
+		appendLogs = append(appendLogs, &rafttypes.AppendLog{
 			Index: nextIndex,
 			Term:  l.node.currentTerm.Load(),
 			Data:  inputs[i].Data,

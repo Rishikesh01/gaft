@@ -20,7 +20,7 @@ type Persistence interface {
 	SaveVoteState(currentTerm int64, votedFor string) error
 	ReadLogIndex(Index int64) (*rafttypes.AppendLog, error)
 	ReadLogs(startIndex int64, endIndex int64) ([]*rafttypes.AppendLog, error)
-	Append(logs ...rafttypes.AppendLog) error
+	Append(logs ...*rafttypes.AppendLog) error
 }
 
 type filePersistence struct {
@@ -58,14 +58,14 @@ func NewFilePersistence(basePath string) *filePersistence {
 	return &filePersistence{
 		basePath: basePath,
 		logCache: &logCache{
-			logs:         [256]rafttypes.AppendLog{},
+			logs:         [256]*rafttypes.AppendLog{},
 			currentIndex: 0,
 		},
 	}
 }
 
 // Append implements [Persistence].
-func (f *filePersistence) Append(logs ...rafttypes.AppendLog) error {
+func (f *filePersistence) Append(logs ...*rafttypes.AppendLog) error {
 	raftLogFile, err := os.OpenFile(filepath.Join(f.basePath, fileRaftLog), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -74,13 +74,13 @@ func (f *filePersistence) Append(logs ...rafttypes.AppendLog) error {
 
 	var buf bytes.Buffer
 	for _, log := range logs {
-		crcValue, err := crcAppendLog(&log)
+		crcValue, err := crcAppendLog(log)
 		if err != nil {
 			return err
 		}
 		raftLog := fileFormatRaftLogs{
 			crc: crcValue,
-			log: &log,
+			log: log,
 		}
 
 		if err := raftLog.Store(&buf); err != nil {

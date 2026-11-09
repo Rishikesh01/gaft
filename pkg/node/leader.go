@@ -217,7 +217,7 @@ func (l *leaderMode) appendLogs(inputs []Proposal, logType string) (Waiter, *app
 	}
 	select {
 	case <-l.ctx.Done():
-		return Waiter{}, nil, ErrCurrentRoleNotLeader
+		return Waiter{}, nil, ErrRaftCommitFailure
 	default:
 		l.node.nextIndexs.CompareAndSwap(startIndex, nextIndex)
 	}
